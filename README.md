@@ -1,4 +1,4 @@
-# checkerboard
+# Methodological Approach for Spatial Distribution Analysis
 Fossil distribution
 This archive contains four files, each corresponding to a different step in the data processing and analysis workflow for spatial fossil distribution.
 
