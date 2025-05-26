@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Biological Specimen Detection</title>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg2pdf.js/2.2.1/svg2pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .panel {
+            flex: 1;
+            min-width: 300px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        canvas {
+            max-width: 100%;
+            border: 1px solid #ddd;
+        }
+        .button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 10px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .button.secondary {
+            background-color: #2196F3;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .loading {
+            display: none;
+            margin: 10px 0;
+        }
+        #dropzone {
+            border: 2px dashed #ccc;
+            border-radius: 5px;
+            padding: 25px;
+            text-align: center;
+            margin: 15px 0;
+            background-color: #f9f9f9;
+        }
+        #dropzone.highlight {
+            border-color: #4CAF50;
+            background-color: #e8f5e9;
+        }
+        svg {
+            max-width: 100%;
+            height: auto;
+            background-color: white;
+        }
+        .button-group {
+            margin-top: 10px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Specimen Detection Tool</h1>
+    
+    <div class="panel">
+        <h2>Step 1: Upload or Drag Image</h2>
+        <div id="dropzone">
+            Drop image here, or click to select file
+            <br><br>
+            <input type="file" id="fileInput" accept="image/*">
+        </div>
+        <div class="loading" id="loading">Processing, please wait...</div>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <h2>Original Image</h2>
+            <canvas id="originalCanvas"></canvas>
+        </div>
+        <div class="panel">
+            <h2>Detection Result</h2>
+            <canvas id="detectionCanvas"></canvas>
+            <div id="circleCount"></div>
+            <div class="button-group">
+                <button id="saveDetectionBtn" class="button secondary" disabled>Save Detection Result</button>
+                <button id="exportCsvBtn" class="button secondary" disabled>Export CSV Data</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let circles = [];
+        let imageWidth = 0;
+        let imageHeight = 0;
+        
+        function onLibrariesReady() {
+            document.getElementById('loading').style.display = 'none';
+        }
+        
+        if (window.cv) {
+            console.log('OpenCV.js loaded');
+        } else {
+            cv = {
+                onRuntimeInitialized: function() {
+                    console.log('OpenCV.js loaded');
+                }
+            };
+        }
+
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropzone.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropzone.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropzone.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight() {
+            dropzone.classList.add('highlight');
+        }
+        
+        function unhighlight() {
+            dropzone.classList.remove('highlight');
+        }
+        
+        dropzone.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+        
+        fileInput.addEventListener('change', function() {
+            handleFiles(this.files);
+        });
+        
+        function handleFiles(files) {
+            if (files.length > 0) {
+                processImage(files[0]);
+            }
+        }
+        
+        function processImage(file) {
+            document.getElementById('loading').style.display = 'block';
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() {
+                    const originalCanvas = document.getElementById('originalCanvas');
+                    originalCanvas.width = img.width;
+                    originalCanvas.height = img.height;
+                    imageWidth = img.width;
+                    imageHeight = img.height;
+                    
+                    const ctx = originalCanvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    
+                    detectCircles(img);
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function detectCircles(img) {
+            try {
+                const src = cv.imread(document.getElementById('originalCanvas'));
+                const dst = new cv.Mat();
+                const detectionCanvas = document.getElementById('detectionCanvas');
+                
+                cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+                
+                const ksize = new cv.Size(5, 5);
+                cv.GaussianBlur(dst, dst, ksize, 0);
+                
+                cv.Canny(dst, dst, 50, 150);
+                
+                const circles = new cv.Mat();
+                cv.HoughCircles(dst, circles, cv.HOUGH_GRADIENT, 1, 20, 100, 20, 5, 30);
+                
+                const detectionCtx = detectionCanvas.getContext('2d');
+                detectionCanvas.width = img.width;
+                detectionCanvas.height = img.height;
+                
+                detectionCtx.drawImage(img, 0, 0);
+                
+                window.circles = [];
+                
+                for (let i = 0; i < circles.cols; i++) {
+                    const x = circles.data32F[i * 3];
+                    const y = circles.data32F[i * 3 + 1];
+                    const radius = circles.data32F[i * 3 + 2];
+                    
+                    window.circles.push({x, y, radius});
+                    
+                    detectionCtx.beginPath();
+                    detectionCtx.arc(x, y, radius, 0, 2 * Math.PI);
+                    detectionCtx.strokeStyle = 'red';
+                    detectionCtx.lineWidth = 2;
+                    detectionCtx.stroke();
+                    
+                    detectionCtx.fillStyle = 'blue';
+                    detectionCtx.font = '12px Arial';
+                    detectionCtx.fillText(i+1, x, y);
+                }
+                
+                document.getElementById('circleCount').innerHTML = `Detected ${circles.cols} specimens`;
+                
+                document.getElementById('saveDetectionBtn').disabled = false;
+                document.getElementById('exportCsvBtn').disabled = false;
+                
+                src.delete();
+                dst.delete();
+                circles.delete();
+                
+                document.getElementById('loading').style.display = 'none';
+                
+            } catch (err) {
+                console.error(err);
+                document.getElementById('loading').style.display = 'none';
+                alert('Detection failed: ' + err.message);
+            }
+        }
+        
+        document.getElementById('saveDetectionBtn').addEventListener('click', function() {
+            const canvas = document.getElementById('detectionCanvas');
+            saveCanvasToPDF(canvas, 'Detection_Results');
+        });
+        
+        document.getElementById('exportCsvBtn').addEventListener('click', function() {
+            if (window.circles && window.circles.length > 0) {
+                exportDistanceDataToCSV(window.circles);
+            } else {
+                alert('Please upload an image and detect specimens first');
+            }
+        });
+
+        function exportDistanceDataToCSV(circles) {
+            let csvContent = "Point ID";
+            for (let i = 0; i < circles.length; i++) {
+                csvContent += `,Point ${i+1}`;
+            }
+            csvContent += "\n";
+            
+            for (let i = 0; i < circles.length; i++) {
+                csvContent += `Point ${i+1}`;
+                
+                for (let j = 0; j < circles.length; j++) {
+                    let distance;
+                    if (i === j) {
+                        distance = 0;
+                    } else {
+                        distance = Math.sqrt(
+                            Math.pow(circles[i].x - circles[j].x, 2) + 
+                            Math.pow(circles[i].y - circles[j].y, 2)
+                        );
+                    }
+                    csvContent += `,${distance.toFixed(2)}`;
+                }
+                csvContent += "\n";
+            }
+            
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', 'distance_data.csv');
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+
+        function saveCanvasToPDF(canvas, title) {
+            try {
+                const { jsPDF } = window.jspdf;
+                if (!jsPDF) {
+                    throw new Error("jsPDF library not loaded properly");
+                }
+                
+                const pdf = new jsPDF({
+                    orientation: canvas.width > canvas.height ? 'landscape' : 'portrait',
+                    unit: 'mm',
+                    format: 'a4'
+                });
+                
+                pdf.setFontSize(16);
+                pdf.text(title, 15, 15);
+                
+                const imgData = canvas.toDataURL('image/jpeg', 0.8);
+                
+                const pageWidth = pdf.internal.pageSize.getWidth();
+                const pageHeight = pdf.internal.pageSize.getHeight();
+                
+                const margin = 20;
+                const maxWidth = pageWidth - 2 * margin;
+                const maxHeight = pageHeight - margin - 25;
+                
+                let pdfWidth, pdfHeight;
+                const ratio = canvas.width / canvas.height;
+                
+                if (ratio > maxWidth / maxHeight) {
+                    pdfWidth = maxWidth;
+                    pdfHeight = pdfWidth / ratio;
+                } else {
+                    pdfHeight = maxHeight;
+                    pdfWidth = pdfHeight * ratio;
+                }
+                
+                pdf.addImage(imgData, 'JPEG', margin, 25, pdfWidth, pdfHeight);
+                
+                pdf.save(`${title}.pdf`);
+                
+                return true;
+            } catch (error) {
+                console.error("Failed to save PDF:", error);
+                alert(`Failed to save PDF: ${error.message}`);
+                return false;
+            }
+        }
+    </script>
+</body>
+</html>
