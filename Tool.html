@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Biological Individual Spatial Distribution Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/opencv.js@1.2.1/opencv.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/svg2pdf.js/2.2.1/svg2pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .panel {
+            flex: 1;
+            min-width: 300px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        canvas {
+            max-width: 100%;
+            border: 1px solid #ddd;
+        }
+        .button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 10px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .button.secondary {
+            background-color: #2196F3;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .loading {
+            display: none;
+            margin: 10px 0;
+        }
+        #dropzone {
+            border: 2px dashed #ccc;
+            border-radius: 5px;
+            padding: 25px;
+            text-align: center;
+            margin: 15px 0;
+            background-color: #f9f9f9;
+        }
+        #dropzone.highlight {
+            border-color: #4CAF50;
+            background-color: #e8f5e9;
+        }
+        svg {
+            max-width: 100%;
+            height: auto;
+            background-color: white;
+        }
+        .button-group {
+            margin-top: 10px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Biological Individual Spatial Distribution Analysis Tool</h1>
+    
+    <div class="panel">
+        <h2>Step 1: Upload or Drag & Drop Image</h2>
+        <div id="dropzone">
+            Drag and drop image here, or click to select file
+            <br><br>
+            <input type="file" id="fileInput" accept="image/*">
+        </div>
+        <div class="loading" id="loading">Processing, please wait...</div>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <h2>Original Image</h2>
+            <canvas id="originalCanvas"></canvas>
+        </div>
+        <div class="panel">
+            <h2>Detection Results</h2>
+            <canvas id="detectionCanvas"></canvas>
+            <div id="circleCount"></div>
+            <div class="button-group">
+                <button id="analyzeBtn" class="button" disabled>Analyze Distribution</button>
+                <button id="saveDetectionBtn" class="button secondary" disabled>Save Detection Results</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <h2>Nearest Neighbor Analysis Results</h2>
+            <div id="analysisResult"></div>
+            <div class="button-group">
+                <button id="saveReportBtn" class="button secondary" disabled>Save Analysis Report</button>
+                <button id="exportCsvBtn" class="button secondary" disabled>Export Distance Data CSV</button>
+            </div>
+        </div>
+        <div class="panel">
+            <h2>Voronoi Diagram</h2>
+            <div id="voronoiContainer"></div>
+            <div class="button-group">
+                <button id="saveVoronoiBtn" class="button secondary" disabled>Save Voronoi Diagram</button>
+                <button id="saveVoronoiSvgBtn" class="button secondary" disabled>Save as SVG</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let circles = [];
+        let imageWidth = 0;
+        let imageHeight = 0;
+        
+        // Wait for OpenCV and jsPDF to load
+        function onLibrariesReady() {
+            document.getElementById('loading').style.display = 'none';
+            console.log('All libraries loaded');
+        }
+        
+        // Check if OpenCV is loaded
+        if (window.cv) {
+            console.log('OpenCV.js loaded');
+        } else {
+            // Wait for it to load
+            cv = {
+                onRuntimeInitialized: function() {
+                    console.log('OpenCV.js loaded');
+                }
+            };
+        }
+
+        // Setup drag and drop area
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropzone.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropzone.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropzone.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight() {
+            dropzone.classList.add('highlight');
+        }
+        
+        function unhighlight() {
+            dropzone.classList.remove('highlight');
+        }
+        
+        dropzone.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            handleFiles(files);
+        }
+        
+        fileInput.addEventListener('change', function() {
+            handleFiles(this.files);
+        });
+        
+        function handleFiles(files) {
+            if (files.length > 0) {
+                processImage(files[0]);
+            }
+        }
+        
+        function processImage(file) {
+            document.getElementById('loading').style.display = 'block';
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() {
+                    // Display original image
+                    const originalCanvas = document.getElementById('originalCanvas');
+                    originalCanvas.width = img.width;
+                    originalCanvas.height = img.height;
+                    imageWidth = img.width;
+                    imageHeight = img.height;
+                    
+                    const ctx = originalCanvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Use OpenCV to detect circles
+                    detectCircles(img);
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function detectCircles(img) {
+            try {
+                // Create OpenCV matrix
+                const src = cv.imread(document.getElementById('originalCanvas'));
+                const dst = new cv.Mat();
+                const detectionCanvas = document.getElementById('detectionCanvas');
+                
+                // Convert to grayscale
+                cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY);
+                
+                // Apply Gaussian blur
+                const ksize = new cv.Size(5, 5);
+                cv.GaussianBlur(dst, dst, ksize, 0);
+                
+                // Apply Canny edge detection
+                cv.Canny(dst, dst, 50, 150);
+                
+                // Detect circles
+                const circles = new cv.Mat();
+                // Adjust parameters for better circle detection
+                cv.HoughCircles(dst, circles, cv.HOUGH_GRADIENT, 1, 20, 100, 20, 5, 30);
+                
+                // Draw detection results
+                const detectionCtx = detectionCanvas.getContext('2d');
+                detectionCanvas.width = img.width;
+                detectionCanvas.height = img.height;
+                
+                // First draw original image
+                detectionCtx.drawImage(img, 0, 0);
+                
+                // Store detected circles
+                window.circles = [];
+                
+                // Draw detected circles
+                for (let i = 0; i < circles.cols; i++) {
+                    const x = circles.data32F[i * 3];
+                    const y = circles.data32F[i * 3 + 1];
+                    const radius = circles.data32F[i * 3 + 2];
+                    
+                    window.circles.push({x, y, radius});
+                    
+                    detectionCtx.beginPath();
+                    detectionCtx.arc(x, y, radius, 0, 2 * Math.PI);
+                    detectionCtx.strokeStyle = 'red';
+                    detectionCtx.lineWidth = 2;
+                    detectionCtx.stroke();
+                    
+                    // Add numbering
+                    detectionCtx.fillStyle = 'blue';
+                    detectionCtx.font = '12px Arial';
+                    detectionCtx.fillText(i+1, x, y);
+                }
+                
+                // Display number of detected circles
+                document.getElementById('circleCount').innerHTML = `Detected ${circles.cols} circular individuals`;
+                
+                // Enable buttons
+                document.getElementById('analyzeBtn').disabled = false;
+                document.getElementById('saveDetectionBtn').disabled = false;
+                
+                // Release resources
+                src.delete();
+                dst.delete();
+                circles.delete();
+                
+                document.getElementById('loading').style.display = 'none';
+                
+            } catch (err) {
+                console.error(err);
+                document.getElementById('loading').style.display = 'none';
+                alert('Circle detection failed: ' + err.message);
+            }
+        }
+        
+        // Analyze button click event
+        document.getElementById('analyzeBtn').addEventListener('click', function() {
+            if (window.circles && window.circles.length > 0) {
+                analyzeDistribution(window.circles);
+                drawVoronoiDiagram(window.circles);
+                document.getElementById('saveReportBtn').disabled = false;
+                document.getElementById('saveVoronoiBtn').disabled = false;
+                document.getElementById('saveVoronoiSvgBtn').disabled = false;
+            } else {
+                alert('Please upload an image and detect circles first');
+            }
+        });
+        
+        // Save detection results
+        document.getElementById('saveDetectionBtn').addEventListener('click', function() {
+            const canvas = document.getElementById('detectionCanvas');
+            saveCanvasToPDF(canvas, 'Circle Detection Results');
+        });
+        
+        // Export CSV button click event
+        document.getElementById('exportCsvBtn').addEventListener('click', function() {
+            if (window.circles && window.circles.length > 0) {
+                exportDistanceDataToCSV(window.circles);
+            } else {
+                alert('Please upload an image and detect circles first');
+            }
+        });
+
+        // Export distance data to CSV
+        function exportDistanceDataToCSV(circles) {
+            // Prepare CSV header row with point numbers
+            let csvContent = "Point Number";
+            for (let i = 0; i < circles.length; i++) {
+                csvContent += `,Point ${i+1}`;
+            }
+            csvContent += "\n";
+            
+            // Add each row of data (distance from each point to all other points)
+            for (let i = 0; i < circles.length; i++) {
+                // Add row header (point number)
+                csvContent += `Point ${i+1}`;
+                
+                // Calculate and add distances from this point to all other points
+                for (let j = 0; j < circles.length; j++) {
+                    let distance;
+                    if (i === j) {
+                        // Distance from point to itself is 0
+                        distance = 0;
+                    } else {
+                        // Calculate Euclidean distance between two points
+                        distance = Math.sqrt(
+                            Math.pow(circles[i].x - circles[j].x, 2) + 
+                            Math.pow(circles[i].y - circles[j].y, 2)
+                        );
+                    }
+                    csvContent += `,${distance.toFixed(2)}`;
+                }
+                csvContent += "\n";
+            }
+            
+            // Create and download CSV file
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', 'nearest_neighbor_distance_data.csv');
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+        
+        // Save analysis report
+        document.getElementById('saveReportBtn').addEventListener('click', function() {
+            const reportElement = document.getElementById('analysisResult');
+            saveElementToPDF(reportElement, 'Nearest Neighbor Analysis Report');
+        });
+        
+        // Save Voronoi diagram as PDF
+        document.getElementById('saveVoronoiBtn').addEventListener('click', function() {
+            const svgContainer = document.getElementById('voronoiContainer');
+            saveSvgToPdf(svgContainer.querySelector('svg'), 'Voronoi Diagram Analysis');
+        });
+        
+        // Save Voronoi diagram as SVG
+        document.getElementById('saveVoronoiSvgBtn').addEventListener('click', function() {
+            const svgContainer = document.getElementById('voronoiContainer');
+            const svgData = new XMLSerializer().serializeToString(svgContainer.querySelector('svg'));
+            const blob = new Blob([svgData], {type: 'image/svg+xml'});
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'voronoi_diagram.svg';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+        
+        // Improved save Canvas to PDF function
+        function saveCanvasToPDF(canvas, title) {
+            try {
+                const { jsPDF } = window.jspdf;
+                if (!jsPDF) {
+                    throw new Error("jsPDF library not properly loaded");
+                }
+                
+                // Create PDF document
+                const pdf = new jsPDF({
+                    orientation: canvas.width > canvas.height ? 'landscape' : 'portrait',
+                    unit: 'mm',
+                    format: 'a4'
+                });
+                
+                // Add title
+                pdf.setFontSize(16);
+                pdf.text(title, 15, 15);
+                
+                // Get Canvas data URL
+                const imgData = canvas.toDataURL('image/jpeg', 0.8); // Use JPEG for better performance
+                
+                // Calculate appropriate size to fit PDF page
+                const pageWidth = pdf.internal.pageSize.getWidth();
+                const pageHeight = pdf.internal.pageSize.getHeight();
+                
+                // Maximize image size while maintaining aspect ratio
+                const margin = 20;
+                const maxWidth = pageWidth - 2 * margin;
+                const maxHeight = pageHeight - margin - 25; // Consider title space
+                
+                let pdfWidth, pdfHeight;
+                const ratio = canvas.width / canvas.height;
+                
+                if (ratio > maxWidth / maxHeight) {
+                    // Width limited
+                    pdfWidth = maxWidth;
+                    pdfHeight = pdfWidth / ratio;
+                } else {
+                    // Height limited
+                    pdfHeight = maxHeight;
+                    pdfWidth = pdfHeight * ratio;
+                }
+                
+                // Add image
+                pdf.addImage(imgData, 'JPEG', margin, 25, pdfWidth, pdfHeight);
+                
+                // Save PDF
+                pdf.save(`${title}.pdf`);
+                
+                return true;
+            } catch (error) {
+                console.error("Failed to save PDF:", error);
+                alert(`Failed to save PDF: ${error.message}`);
+                return false;
+            }
+        }
+
+        // Improved save SVG to PDF function
+        function saveSvgToPdf(svgElement, title) {
+            try {
+                if (!window.jspdf || !window.svg2pdf) {
+                    throw new Error("PDF libraries not properly loaded");
+                }
+                
+                const { jsPDF } = window.jspdf;
+                
+                // Create PDF document
+                const pdf = new jsPDF({
+                    orientation: 'landscape',
+                    unit: 'mm',
+                    format: 'a4'
+                });
+                
+                // Add title
+                pdf.setFontSize(16);
+                pdf.text(title, 15, 15);
+                
+                // Show progress indication
+                const loadingDiv = document.createElement('div');
+                loadingDiv.textContent = "Generating PDF, please wait...";
+                loadingDiv.style.position = "fixed";
+                loadingDiv.style.top = "50%";
+                loadingDiv.style.left = "50%";
+                loadingDiv.style.transform = "translate(-50%, -50%)";
+                loadingDiv.style.padding = "10px 20px";
+                loadingDiv.style.background = "rgba(0,0,0,0.7)";
+                loadingDiv.style.color = "white";
+                loadingDiv.style.borderRadius = "5px";
+                loadingDiv.style.zIndex = "9999";
+                document.body.appendChild(loadingDiv);
+                
+                // Use Promise to handle SVG conversion
+                svg2pdf(svgElement, pdf, {
+                    xOffset: 15,
+                    yOffset: 25,
+                    width: pdf.internal.pageSize.getWidth() - 30,
+                    height: pdf.internal.pageSize.getHeight() - 40
+                })
+                .then(() => {
+                    // Save PDF
+                    pdf.save(`${title}.pdf`);
+                    document.body.removeChild(loadingDiv);
+                })
+                .catch(error => {
+                    document.body.removeChild(loadingDiv);
+                    console.error("SVG to PDF conversion failed:", error);
+                    alert(`SVG to PDF conversion failed: ${error.message}`);
+                    
+                    // Fallback: save via Canvas
+                    alert("Trying alternative method to save...");
+                    saveSvgAsCanvas(svgElement, title);
+                });
+                
+            } catch (error) {
+                console.error("Failed to save PDF:", error);
+                alert(`Failed to save PDF: ${error.message}`);
+            }
+        }
+
+        // Fallback: save SVG via Canvas
+        function saveSvgAsCanvas(svgElement, title) {
+            try {
+                // Clone SVG to avoid modifying original SVG
+                const svgClone = svgElement.cloneNode(true);
+                
+                // Create Canvas
+                const canvas = document.createElement('canvas');
+                canvas.width = svgElement.viewBox.baseVal.width || svgElement.width.baseVal.value;
+                canvas.height = svgElement.viewBox.baseVal.height || svgElement.height.baseVal.value;
+                
+                // Convert SVG to image
+                const xml = new XMLSerializer().serializeToString(svgClone);
+                const svg64 = btoa(unescape(encodeURIComponent(xml)));
+                const image64 = 'data:image/svg+xml;base64,' + svg64;
+                
+                const img = new Image();
+                img.onload = function() {
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0);
+                    
+                    // Save using Canvas to PDF
+                    saveCanvasToPDF(canvas, title);
+                };
+                img.src = image64;
+            } catch (error) {
+                console.error("SVG to Canvas conversion failed:", error);
+                alert(`Unable to save SVG: ${error.message}`);
+            }
+        }
+
+        // Improved save element to PDF function
+        function saveElementToPDF(element, title) {
+            try {
+                if (!window.html2canvas || !window.jspdf) {
+                    throw new Error("HTML conversion or PDF libraries not properly loaded");
+                }
+                
+                // Show progress indication
+                const loadingDiv = document.createElement('div');
+                loadingDiv.textContent = "Generating PDF, please wait...";
+                loadingDiv.style.position = "fixed";
+                loadingDiv.style.top = "50%";
+                loadingDiv.style.left = "50%";
+                loadingDiv.style.transform = "translate(-50%, -50%)";
+                loadingDiv.style.padding = "10px 20px";
+                loadingDiv.style.background = "rgba(0,0,0,0.7)";
+                loadingDiv.style.color = "white";
+                loadingDiv.style.borderRadius = "5px";
+                loadingDiv.style.zIndex = "9999";
+                document.body.appendChild(loadingDiv);
+                
+                // Use html2canvas to capture element
+                html2canvas(element, {
+                    scale: 2, // Improve clarity
+                    logging: false,
+                    useCORS: true
+                }).then(canvas => {
+                    const { jsPDF } = window.jspdf;
+                    
+                    // Create PDF document
+                    const pdf = new jsPDF({
+                        orientation: 'portrait',
+                        unit: 'mm',
+                        format: 'a4'
+                    });
+                    
+                    // Add title
+                    pdf.setFontSize(16);
+                    pdf.text(title, 15, 15);
+                    
+                    // Get Canvas data URL
+                    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+                    
+                    // Calculate appropriate size to fit PDF page
+                    const pageWidth = pdf.internal.pageSize.getWidth();
+                    const pageHeight = pdf.internal.pageSize.getHeight();
+                    
+                    // Maximize image size while maintaining aspect ratio
+                    const margin = 15;
+                    const maxWidth = pageWidth - 2 * margin;
+                    const maxHeight = pageHeight - margin - 25; // Consider title space
+                    
+                    let pdfWidth, pdfHeight;
+                    const ratio = canvas.width / canvas.height;
+                    
+                    if (ratio > maxWidth / maxHeight) {
+                        // Width limited
+                        pdfWidth = maxWidth;
+                        pdfHeight = pdfWidth / ratio;
+                    } else {
+                        // Height limited
+                        pdfHeight = maxHeight;
+                        pdfWidth = pdfHeight * ratio;
+                    }
+                    
+                    // Add image
+                    pdf.addImage(imgData, 'JPEG', margin, 25, pdfWidth, pdfHeight);
+                    
+                    // Save PDF
+                    pdf.save(`${title}.pdf`);
+                    document.body.removeChild(loadingDiv);
+                }).catch(error => {
+                    document.body.removeChild(loadingDiv);
+                    console.error("HTML to Canvas conversion failed:", error);
+                    alert(`Failed to save PDF: ${error.message}`);
+                });
+            } catch (error) {
+                console.error("Failed to save PDF:", error);
+                alert(`Failed to save PDF: ${error.message}`);
+            }
+        }
+        
+        // Analyze distribution
+        function analyzeDistribution(circles) {
+            // Calculate nearest neighbor distances
+            const nearestDistances = [];
+            
+            for (let i = 0; i < circles.length; i++) {
+                let minDist = Infinity;
+                for (let j = 0; j < circles.length; j++) {
+                    if (i !== j) {
+                        const dist = Math.sqrt(
+                            Math.pow(circles[i].x - circles[j].x, 2) + 
+                            Math.pow(circles[i].y - circles[j].y, 2)
+                        );
+                        if (dist < minDist) {
+                            minDist = dist;
+                        }
+                    }
+                }
+                nearestDistances.push(minDist);
+            }
+            
+            // Calculate average nearest neighbor distance
+            const rA = nearestDistances.reduce((sum, dist) => sum + dist, 0) / nearestDistances.length;
+            
+            // Calculate study area
+            const area = imageWidth * imageHeight;
+            
+            // Calculate density
+            const density = circles.length / area;
+            
+            // Calculate expected average nearest neighbor distance under random distribution
+            const rE = 1 / (2 * Math.sqrt(density));
+            
+            // Calculate nearest neighbor index R
+            const R = rA / rE;
+            
+            // Calculate standard error
+            const SE = 0.26136 / Math.sqrt(circles.length * density);
+            
+            // Calculate Z statistic
+            const Z = (rA - rE) / SE;
+            
+            // Determine distribution type
+            let distributionType = "Unknown";
+            if (R < 0.9) {
+                distributionType = "Clustered Distribution";
+            } else if (R > 1.1) {
+                distributionType = "Uniform Distribution";
+            } else {
+                distributionType = "Random Distribution";
+            }
+            
+            // Determine statistical significance
+            let significance = "";
+            if (Math.abs(Z) > 2.58) {
+                significance = "Statistically significant at 0.01 level";
+            } else if (Math.abs(Z) > 1.96) {
+                significance = "Statistically significant at 0.05 level";
+            } else {
+                significance = "Not statistically significant";
+            }
+            
+            // Calculate CV value (coefficient of variation)
+            const mean = rA;
+            const standardDev = standardDeviation(nearestDistances);
+            const CV = standardDev / mean;
+            
+            // Display analysis results
+            const resultHTML = `
+                <h3>Nearest Neighbor Analysis Results</h3>
+                <table>
+                    <tr><th>Parameter</th><th>Value</th></tr>
+                    <tr><td>Number of Individuals</td><td>${circles.length}</td></tr>
+                    <tr><td>Study Area</td><td>${area.toFixed(0)} pixels²</td></tr>
+                    <tr><td>Density (ρ)</td><td>${density.toExponential(4)} individuals/pixel²</td></tr>
+                    <tr><td>Observed Mean Nearest Distance (rA)</td><td>${rA.toFixed(2)} pixels</td></tr>
+                    <tr><td>Expected Mean Nearest Distance (rE)</td><td>${rE.toFixed(2)} pixels</td></tr>
+                    <tr><td>Nearest Neighbor Index (R)</td><td>${R.toFixed(4)}</td></tr>
+                    <tr><td>Z Statistic</td><td>${Z.toFixed(4)}</td></tr>
+                    <tr><td>Coefficient of Variation (CV)</td><td>${CV.toFixed(4)}</td></tr>
+                    <tr><td>Distribution Type</td><td>${distributionType}</td></tr>
+                    <tr><td>Statistical Significance</td><td>${significance}</td></tr>
+                </table>
+                
+                <h3>Nearest Distance Statistics</h3>
+                <table>
+                    <tr><th>Statistic</th><th>Value</th></tr>
+                    <tr><td>Minimum Distance</td><td>${Math.min(...nearestDistances).toFixed(2)} pixels</td></tr>
+                    <tr><td>Maximum Distance</td><td>${Math.max(...nearestDistances).toFixed(2)} pixels</td></tr>
+                    <tr><td>Median Distance</td><td>${median(nearestDistances).toFixed(2)} pixels</td></tr>
+                    <tr><td>Standard Deviation</td><td>${standardDev.toFixed(2)} pixels</td></tr>
+                </table>
+                
+                <h3>Conclusion</h3>
+                <p>Through nearest neighbor analysis, these biological individuals show <strong>${distributionType}</strong>, with R value of ${R.toFixed(4)}, ${significance}.</p>
+                <p>R value approaching 2.15 indicates distribution trending toward completely uniform hexagonal pattern.</p>
+                <p>Coefficient of variation (CV) is ${CV.toFixed(4)}, smaller CV values indicate more uniform distribution.</p>
+            `;
+            
+            document.getElementById('analysisResult').innerHTML = resultHTML;
+            document.getElementById('saveReportBtn').disabled = false;
+            document.getElementById('saveVoronoiBtn').disabled = false;
+            document.getElementById('saveVoronoiSvgBtn').disabled = false;
+            document.getElementById('exportCsvBtn').disabled = false; // Enable CSV export button
+        }
+        
+        // Calculate median
+        function median(values) {
+            const sorted = [...values].sort((a, b) => a - b);
+            const middle = Math.floor(sorted.length / 2);
+            
+            if (sorted.length % 2 === 0) {
+                return (sorted[middle - 1] + sorted[middle]) / 2;
+            }
+            
+            return sorted[middle];
+        }
+        
+        // Calculate standard deviation
+        function standardDeviation(values) {
+            const avg = values.reduce((sum, val) => sum + val, 0) / values.length;
+            const squareDiffs = values.map(value => Math.pow(value - avg, 2));
+            const avgSquareDiff = squareDiffs.reduce((sum, val) => sum + val, 0) / squareDiffs.length;
+            return Math.sqrt(avgSquareDiff);
+        }
+        
+        // Draw Voronoi diagram
+        function drawVoronoiDiagram(circles) {
+            // Clear previous content
+            document.getElementById('voronoiContainer').innerHTML = '';
+            
+            // Create SVG
+            const svg = d3.select('#voronoiContainer')
+                .append('svg')
+                .attr('width', imageWidth)
+                .attr('height', imageHeight)
+                .attr('viewBox', `0 0 ${imageWidth} ${imageHeight}`)
+                .attr('preserveAspectRatio', 'xMidYMid meet')
+                .style('max-width', '100%')
+                .style('height', 'auto');
+                
+            // Create boundary box
+            svg.append('rect')
+                .attr('width', imageWidth)
+                .attr('height', imageHeight)
+                .attr('fill', 'none')
+                .attr('stroke', '#333')
+                .attr('stroke-width', 1);
+                
+            // Extract circle centers as points
+            const points = circles.map(circle => [circle.x, circle.y]);
+            
+            // Create Voronoi generator
+            const delaunay = d3.Delaunay.from(points);
+            const voronoi = delaunay.voronoi([0, 0, imageWidth, imageHeight]);
+                
+            // Draw Voronoi polygons
+            svg.append('g')
+                .selectAll('path')
+                .data(points)
+                .enter()
+                .append('path')
+                .attr('d', (d, i) => voronoi.renderCell(i))
+                .attr('fill', 'none')
+                .attr('stroke', '#2196F3')
+                .attr('stroke-width', 1);
+                
+            // Draw points
+            svg.append('g')
+                .selectAll('circle')
+                .data(points)
+                .enter()
+                .append('circle')
+                .attr('cx', d => d[0])
+                .attr('cy', d => d[1])
+                .attr('r', 3)
+                .attr('fill', 'red');
+            
+            // Add point numbering
+            svg.append('g')
+                .selectAll('text')
+                .data(points)
+                .enter()
+                .append('text')
+                .attr('x', d => d[0] + 5)
+                .attr('y', d => d[1] - 5)
+                .text((d, i) => i + 1)
+                .attr('font-size', '10px')
+                .attr('fill', 'blue');
+        }
+    </script>
+</body>
+</html>
